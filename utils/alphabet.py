@@ -53,7 +53,12 @@ class Alphabet:
                 self.add(instance)
                 return index
             else:
-                return self.instance2index[self.UNKNOWN]
+                #return self.instance2index[self.UNKNOWN]
+                # For label alphabets, UNKNOWN may not exist.
+                if self.UNKNOWN in self.instance2index:
+                    return self.instance2index[self.UNKNOWN]
+                # Fall back to default index (0) if UNKNOWN not present
+                return self.default_index
 
     def get_instance(self, index):
         if index == 0:
