@@ -1,6 +1,7 @@
 from __future__ import print_function
 from __future__ import absolute_import
 import sys
+import os
 from .alphabet import Alphabet
 from .functions import *
 
@@ -431,6 +432,149 @@ class Data:
         if self.sentence_classification:
             self.seg = False
             self.use_crf = False
+
+
+    def write_decoded_results(self, decode_results, name):
+        """
+        Write decoded predictions to a file.
+
+        Supports:
+          - LID only: decode_results = [ [lid_id, lid_id, ...], ... ]
+          - Two-task: decode_results = [ (lid_ids, fus_ids), ... ]  OR
+                     decode_results = { "lid": [...], "fusion": [...] }
+
+        Output format (tab-separated):
+          WORD   GOLD_LID   PRED_LID   GOLD_FUS   PRED_FUS
+        If gold labels are not present (raw), GOLD_* will be 'NA'.
+        """
+
+        # -------- choose source file ----------
+        if name == "train":
+            src_path = self.train_dir
+        elif name == "dev":
+            src_path = self.dev_dir
+        elif name == "test":
+            src_path = self.test_dir
+        elif name == "raw":
+            src_path = self.raw_dir
+        else:
+            raise ValueError(f"Unknown dataset name: {name}")
+
+        # -------- choose output file ----------
+        if self.decode_dir:
+            os.makedirs(self.decode_dir, exist_ok=True)
+            out_path = os.path.join(self.decode_dir, f"{name}.decoded.txt")
+        else:
+            # fallback to model_dir
+            out_path = (self.model_dir if self.model_dir else "decoded") + f".{name}.decoded.txt"
+
+        # -------- normalize decode_results format ----------
+        # Case 1: dict with keys
+        if isinstance(decode_results, dict):
+            lid_preds = decode_results.get("lid", None)
+            fus_preds = decode_results.get("fusion", None)
+        else:
+            lid_preds, fus_preds = None, None
+
+        # Case 2: list where each item is (lid_seq, fus_seq)
+        if lid_preds is None and isinstance(decode_results, list) and len(decode_results) > 0:
+            first = decode_results[0]
+            if isinstance(first, (tuple, list)) and len(first) == 2 and isinstance(first[0], (list, tuple)):
+                lid_preds = [x[0] for x in decode_results]
+                fus_preds = [x[1] for x in decode_results]
+            else:
+                # assume LID only
+                lid_preds = decode_results
+                fus_preds = None
+
+        # Helper: id -> label string
+        def lid_id_to_label(x):
+            # x can be int id or already string
+            if x is None:
+                return "NA"
+            if isinstance(x, str):
+                return x
+            return self.label_alphabet.get_instance(x)
+
+        def fus_id_to_label(x):
+            if x is None:
+                return "NA"
+            if isinstance(x, str):
+                return x
+            # if fusion alphabet exists
+            if hasattr(self, "fusion_label_alphabet"):
+                return self.fusion_label_alphabet.get_instance(x)
+            return str(x)
+
+        # -------- read source file as sentences (blank-line separated) ----------
+        sentences = []
+        cur = []
+        with open(src_path, "r", encoding="utf8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if line.strip() == "":
+                    if cur:
+                        sentences.append(cur)
+                        cur = []
+                else:
+                    cur.append(line)
+            if cur:
+                sentences.append(cur)
+
+        if lid_preds is None:
+            raise RuntimeError("decode_results could not be interpreted (no lid predictions found).")
+
+        if len(sentences) != len(lid_preds):
+            raise RuntimeError(
+                f"Mismatch: source sentences={len(sentences)} but predictions={len(lid_preds)}. "
+                f"Check that decode_results aligns with {src_path}."
+            )
+
+        # -------- write output ----------
+        with open(out_path, "w", encoding="utf8") as out:
+            for s_idx, sent_lines in enumerate(sentences):
+                lid_seq = lid_preds[s_idx]
+                fus_seq = fus_preds[s_idx] if fus_preds is not None else None
+                # ---- unwrap nbest output if present (common in NCRF++) ----
+                # If nbest=1, predictions often look like: [ [seq] ]
+                if isinstance(lid_seq, (list, tuple)) and len(lid_seq) == 1 and isinstance(lid_seq[0], (list, tuple)):
+                    lid_seq = lid_seq[0]
+
+                if fus_seq is not None and isinstance(fus_seq, (list, tuple)) and len(fus_seq) == 1 and isinstance(fus_seq[0], (list, tuple)):
+                    fus_seq = fus_seq[0]
+
+                if len(lid_seq) != len(sent_lines):
+                    raise RuntimeError(
+                        f"Sentence length mismatch at sent {s_idx}: "
+                        f"lines={len(sent_lines)} preds={len(lid_seq)}"
+                    )
+                if fus_seq is not None and len(fus_seq) != len(sent_lines):
+                    raise RuntimeError(
+                        f"Fusion length mismatch at sent {s_idx}: "
+                        f"lines={len(sent_lines)} fus_preds={len(fus_seq)}"
+                    )
+
+                for t_idx, raw_line in enumerate(sent_lines):
+                    parts = raw_line.split()
+                    word = parts[0] if parts else ""
+
+                    # Try to read gold labels if present:
+                    # Your format (two-task training) usually ends with: ... GOLD_LID GOLD_FUS
+                    gold_lid = "NA"
+                    gold_fus = "NA"
+                    if not self.sentence_classification and len(parts) >= 3:
+                        # If it has at least 3 columns, and you use last two as gold labels in build_alphabet
+                        gold_lid = parts[-2]
+                        gold_fus = parts[-1]
+
+                    pred_lid = lid_id_to_label(lid_seq[t_idx])
+                    pred_fus = fus_id_to_label(fus_seq[t_idx]) if fus_seq is not None else "NA"
+
+                    out.write(f"{word}\t{gold_lid}\t{pred_lid}\t{gold_fus}\t{pred_fus}\n")
+                out.write("\n")
+
+        print(f"Decoded results written to: {out_path}")
+        sys.stdout.flush()
 
 
 def config_file_to_dict(input_file):
