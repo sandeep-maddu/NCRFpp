@@ -406,6 +406,21 @@ if __name__ == '__main__':
         #    data.write_nbest_decoded_results(decode_results, pred_scores, 'raw')
         #else:
          #   data.write_decoded_results(decode_results, 'raw')
+        #data.write_decoded_results(decode_results, 'raw')
+        # --- ensure writer receives BOTH tasks if available ---
+        if isinstance(decode_results, tuple) and len(decode_results) == 2:
+            lid_decode_results, fus_decode_results = decode_results
+            decode_results = {"lid": lid_decode_results, "fusion": fus_decode_results}
+
+        elif isinstance(decode_results, dict):
+            # already good: expects keys "lid" and "fusion"
+            pass
+
+        else:
+            # LID-only decode; fusion predictions not produced
+            decode_results = {"lid": decode_results, "fusion": None}
+
         data.write_decoded_results(decode_results, 'raw')
+
     else:
         print("Invalid argument! Please use valid arguments! (train/decode)")
