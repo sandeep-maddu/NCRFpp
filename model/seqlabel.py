@@ -120,14 +120,24 @@ class SeqLabel(nn.Module):
         return tag_seq
 
     def decode_nbest(self, word_inputs, feature_inputs, word_seq_lengths,
-                     char_inputs, char_seq_lengths, char_seq_recover, mask, nbest):
+                 char_inputs, char_seq_lengths, char_seq_recover, mask, nbest):
         if not self.use_crf:
             print("Nbest output is currently supported only for CRF! Exit...")
             exit(0)
-        lid_emissions = self.word_hidden(
+    
+        # Get both LID emissions and shared features
+        lid_emissions, feature_out = self.word_hidden(
             word_inputs, feature_inputs, word_seq_lengths,
             char_inputs, char_seq_lengths, char_seq_recover,
-            return_feature=False
+            return_feature=True
         )
-        scores, tag_seq = self.crf._viterbi_decode_nbest(lid_emissions, mask, nbest)
-        return scores, tag_seq
+    
+        # LID n-best via CRF
+        lid_scores, lid_tag_seq = self.crf._viterbi_decode_nbest(lid_emissions, mask, nbest)
+    
+        # Fusion 1-best via linear head
+        fusion_logits = self.hidden2fusion(feature_out)      # [B, T, fusion_label_size]
+        fusion_pred = torch.argmax(fusion_logits, dim=-1)    # [B, T]
+    
+        return lid_scores, lid_tag_seq, fusion_pred
+    
