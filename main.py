@@ -109,12 +109,11 @@ def evaluate(data, model, name, nbest=None):
     train_num = len(instances)
     total_batch = train_num // batch_size + 1
 
-    # LID outputs
     nbest_pred_results, pred_scores = [], []
     pred_results, gold_results = [], []
 
-    # Fusion outputs (for writing decoded file)
-    fus_pred_results = []   # list of list[str] per sentence (recovered labels)
+    # NEW: fusion predictions to write column 5
+    fus_pred_results = []
 
     for batch_id in range(total_batch):
         start = batch_id * batch_size
@@ -130,41 +129,40 @@ def evaluate(data, model, name, nbest=None):
         )
 
         if nbest and not data.sentence_classification:
-            # UPDATED: decode_nbest now returns 3 things
-            lid_scores, nbest_tag_seq, fus_pred = model.decode_nbest(
+            # UPDATED: now returns fusion_pred too
+            scores, nbest_tag_seq, fusion_pred = model.decode_nbest(
                 batch_word, batch_features, batch_wordlen,
                 batch_char, batch_charlen, batch_charrecover,
                 mask, nbest
             )
 
-            # LID: keep NCRF++ behavior
+            # LID nbest -> strings (keep existing behavior)
             nbest_pred_result = recover_nbest_label(
                 nbest_tag_seq, mask, data.label_alphabet, batch_wordrecover
             )
             nbest_pred_results += nbest_pred_result
-            pred_scores += lid_scores[batch_wordrecover].cpu().data.numpy().tolist()
+            pred_scores += scores[batch_wordrecover].cpu().data.numpy().tolist()
 
-            # best-path LID tags for normal recover_label
+            # best-path LID ids for normal evaluation
             tag_seq = nbest_tag_seq[:, :, 0]
 
-            # Fusion: recover per-token labels into strings (like B-FU / O etc.)
-            # fus_pred is [B, T] ids; convert to [T] ids per sentence in the correct order
-            fus_pred = fus_pred.cpu()
-            fus_pred_label = recover_label(
-                fus_pred, batch_label_fus, mask, data.fusion_label_alphabet, batch_wordrecover,
+            # NEW: fusion_pred ids -> strings (for writing decoded file)
+            fus_pred_label, _ = recover_label(
+                fusion_pred, batch_label_fus, mask,
+                data.fusion_label_alphabet, batch_wordrecover,
                 data.sentence_classification
-            )[0]  # returns (pred_label, gold_label); we only need pred_label
+            )
             fus_pred_results += fus_pred_label
 
         else:
-            # If you want fusion predictions also when nbest is None,
-            # you should add a model.decode(...) that returns (lid_tag_seq, fus_pred)
-            # For now keep original behavior: LID only (fusion will be NA in non-nbest mode)
+            # keep original non-nbest path as-is (LID-only)
             tag_seq = model(batch_word, batch_features, batch_wordlen,
                             batch_char, batch_charlen, batch_charrecover, mask)
 
+        # LID labels for scoring
         pred_label, gold_label = recover_label(
-            tag_seq, batch_label_lid, mask, data.label_alphabet, batch_wordrecover, data.sentence_classification
+            tag_seq, batch_label_lid, mask, data.label_alphabet,
+            batch_wordrecover, data.sentence_classification
         )
         pred_results += pred_label
         gold_results += gold_label
@@ -173,14 +171,13 @@ def evaluate(data, model, name, nbest=None):
     speed = len(instances) / decode_time
     acc, p, r, f = get_ner_fmeasure(gold_results, pred_results, data.tagScheme)
 
-    # IMPORTANT: Return dict so writer can print both tasks
     if nbest and not data.sentence_classification:
-        both = {"lid": nbest_pred_results, "fusion": fus_pred_results}
-        return speed, acc, p, r, f, both, pred_scores
+        # Return both tasks
+        return speed, acc, p, r, f, {"lid": nbest_pred_results, "fusion": fus_pred_results}, pred_scores
 
-    # non-nbest path remains LID-only
-    both = {"lid": pred_results, "fusion": None}
-    return speed, acc, p, r, f, both, pred_scores
+    # Non-nbest: LID only
+    return speed, acc, p, r, f, {"lid": pred_results, "fusion": None}, pred_scores
+
 
 
 def batchify_with_label(input_batch_list, gpu, if_train=True, sentence_classification=False):
