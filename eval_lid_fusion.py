@@ -20,9 +20,10 @@ def norm_fus(tag: str) -> str:
     if tag == "NA":
         return "NA"
     tag_u = tag.upper()
-    if tag_u.startswith("B-"):
+    if tag_u.startswith(("B-","I-","S-")):
         tag_u = tag_u[2:]
-    return "FU" if tag_u == "FU" else "O"
+    return "FU" if tag_u in {"FU", "FUS"} else "O"
+
 
 def read_decoded_5col(path: str):
     """
